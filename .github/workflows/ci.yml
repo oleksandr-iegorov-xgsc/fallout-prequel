@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    name: Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # AGENTS.md section 7 / SOUL.md section 10. Human-owned files.
+      - name: Human-owned files unchanged
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          BLOCKED=$(echo "$CHANGED" | grep -E \
+            '^(SOUL\.md|AGENTS\.md|\.opencode/|LICENSE)' || true)
+          if [ -n "$BLOCKED" ]; then
+            echo "::error::Human-owned files modified:"
+            echo "$BLOCKED"
+            echo "See AGENTS.md section 7."
+            exit 1
+          fi
+          echo "OK"
+
+      # AGENTS.md section 4 rule 2.
+      - name: No input() in tests
+        run: |
+          if [ -d tests ] && grep -rn --include='*.py' '\binput(' tests/; then
+            echo "::error::input() found in tests/."
+            echo "Tests drive the game through piped stdin."
+            echo "See AGENTS.md section 4, rule 2."
+            exit 1
+          fi
+          echo "OK"
+
+      # SOUL.md section 6: standard library only at runtime.
+      - name: No third-party runtime imports
+        run: |
+          GAME=$(ls fallout_prequel.py 2>/dev/null || true)
+          if [ -z "$GAME" ]; then
+            echo "single-file game not present (post-split?), skipping"
+            exit 0
+          fi
+          BAD=$(grep -nE '^\s*(import|from)\s+' "$GAME" \
+            | grep -vE '\b(random|time|sys|os|traceback|json|datetime|typing|dataclasses|enum|pathlib|textwrap|itertools|functools|collections|copy|math|re|argparse|abc)\b' \
+            || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Possible non-stdlib runtime import:"
+            echo "$BAD"
+            echo "SOUL.md section 6 permits stdlib only at runtime."
+            exit 1
+          fi
+          echo "OK"
+
+      # AGENTS.md section 4 rule 8. Unseeded RNG makes exact-value
+      # assertions flaky. Warn rather than block: the seeding work
+      # will legitimately need them.
+      - name: Flaky exact-value assertions
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -d tests ]; then
+            SUS=$(grep -rnE 'assert\s+.*\.(hp|xp|caps)\s*==\s*[0-9]+' \
+                    tests/ || true)
+            if [ -n "$SUS" ]; then
+              echo "::warning::Exact-value assertions on RNG-affected state:"
+              echo "$SUS"
+              echo "RNG is unseeded (AGENTS.md section 2)."
+              echo "Prefer invariants unless this PR seeds the RNG."
+            fi
+          fi
+          echo "OK"
+
+      # SOUL.md section 7. Non-commercial posture is not agent-editable.
+      - name: Non-commercial posture intact
+        if: github.event_name == 'pull_request'
+        run: |
+          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD || true)
+          if echo "$DIFF" | grep -E '^\+' \
+             | grep -viE '^\+\+\+' \
+             | grep -qiE 'patreon|ko-fi|kickstarter|donate|buy now|purchase|sponsor|itch\.io|steam'; then
+            echo "::error::Diff introduces monetisation-adjacent text."
+            echo "SOUL.md section 7 forbids this."
+            exit 1
+          fi
+          echo "OK"
+
+  check:
+    name: Lint / Test / Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync --all-extras --dev || echo "no uv project yet"
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      # Every minimised reproducer the Playtester found runs here,
+      # forever. This is what makes playtesting compound.
+      - name: Smoke
+        run: make smoke
+
+  pr-hygiene:
+    name: PR body
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Required sections present
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if ! echo "$BODY" | grep -q '## Verification'; then
+            echo "::error::PR body missing '## Verification'."
+            echo "See AGENTS.md section 8."
+            exit 1
+          fi
+          if ! echo "$BODY" | grep -qiE 'closes #[0-9]+'; then
+            echo "::error::PR body missing 'Closes #<n>'."
+            exit 1
+          fi
+          echo "OK"

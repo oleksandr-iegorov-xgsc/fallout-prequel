@@ -1,0 +1,51 @@
+// Local vLLM variant. Copy over opencode.json, or merge the "agent"
+// block in.
+//
+//   vllm serve <big>   --served-model-name builder-128k \
+//                      --max-model-len 131072 --port 8000
+//   vllm serve <small> --served-model-name worker-64k \
+//                      --max-model-len 65536  --port 8000
+//
+// Context window comes from the SERVED MODEL, not from this file.
+// The "limit" block only tells opencode how much room it has left.
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "vllm/worker-64k",
+  "small_model": "vllm/worker-64k",
+
+  "instructions": ["AGENTS.md", "SOUL.md"],
+
+  "provider": {
+    "vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "vLLM (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8000/v1",
+        "apiKey": "{env:VLLM_API_KEY}"
+      },
+      "models": {
+        "builder-128k": {
+          "name": "Builder (128k)",
+          "limit": { "context": 131072, "output": 16384 }
+        },
+        "worker-64k": {
+          "name": "Worker (64k)",
+          "limit": { "context": 65536, "output": 8192 }
+        }
+      }
+    }
+  },
+
+  // Builder is the only role whose context does real work. Everything
+  // else runs happily at 64K.
+  "agent": {
+    "builder":    { "model": "vllm/builder-128k" },
+    "reviewer":   { "model": "vllm/worker-64k" },
+    "playtester": { "model": "vllm/worker-64k" },
+    "planner":    { "model": "vllm/worker-64k" },
+    "ideator":    { "model": "vllm/worker-64k" },
+    "build": { "disable": true },
+    "plan":  { "disable": true }
+  }
+}
